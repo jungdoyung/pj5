@@ -33,17 +33,25 @@ import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from pytube import YouTube
 import subprocess
+from pydub import AudioSegment
+from pydub.utils import which
+import socket
+import csv
+from io import StringIO
 
 # Backend 기능 구현 시작 ---
 
 # 전역변수로 프롬프트 및 파일 데이터 저장
 global_generated_prompt = []
 
+# ffmpeg 경로 설정 (필요한 경우)
+#AudioSegment.converter = "/usr/bin/ffmpeg"
+
 # GitHub 정보 및 OpenAI API 키 자동 설정 또는 입력창을 통해 설정
 def load_env_info():
     json_data = '''
     {
-        "github_repo": "geunilbae/project5",
+        "github_repo": "soryhon/hanachatbot",
         "github_branch": "main"
     }
     '''
@@ -706,9 +714,9 @@ def init_session_state(check_value):
 # HTML 파일을 저장하고 파일 경로를 반환하는 함수 (날짜 포함)
 def save_html_response(html_content, folder_name, report_date_str):
     # 현재 시간을 'YYYYMMDDHHMMSS' 형식으로 가져오기
-    #current_time = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    current_time = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
     # HTML 파일명을 보고서명과 날짜로 설정
-    file_name = f"{folder_name}_result_{report_date_str}.html"
+    file_name = f"{folder_name}_report_{current_time}.html"
     
     # HTML 파일 임시 경로에 저장
     temp_file_path = f"/tmp/{file_name}"
@@ -1247,6 +1255,7 @@ def install_ffmpeg():
     ffmpeg_url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-i686-static.tar.xz"
     ffmpeg_tar = "ffmpeg.tar.xz"
     ffmpeg_dir = "ffmpeg"
+    #ffmpeg_dir = ""
 
     # ffmpeg 다운로드
     if not os.path.exists(ffmpeg_tar):
@@ -1257,6 +1266,13 @@ def install_ffmpeg():
     if not os.path.exists(ffmpeg_dir):
         st.write("ffmpeg 압축을 해제 중입니다...")
         os.system(f"mkdir {ffmpeg_dir}")
+        # 폴더가 만들어졌는지 확인
+        if os.path.exists(ffmpeg_dir):
+            st.write(f"'{ffmpeg_dir}' 폴더가 성공적으로 생성되었습니다.")
+        else:
+            st.error(f"'{ffmpeg_dir}' 폴더 생성에 실패했습니다.")
+            return None  # 폴더 생성에 실패한 경우 None 반환하여 중단
+            
         os.system(f"tar -xJf {ffmpeg_tar} -C {ffmpeg_dir} --strip-components 1")
     
   
@@ -1270,165 +1286,457 @@ def install_ffmpeg():
     st.write(f"ffmpeg 설치 완료! 경로: {ffmpeg_path}")
     return ffmpeg_path
 
-# ffmpeg 설치
-#ffmpeg_path = install_ffmpeg()
 
-# m4a 파일을 wav로 변환하는 함수 (ffmpeg 사용)
-def convert_m4a_to_wav_from_install(file_content):
-    try:
-        # ffmpeg 설치
-        ffmpeg_path = install_ffmpeg()
-        # 임시 m4a 파일 생성
-        with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as temp_m4a_file:
-            temp_m4a_file.write(file_content.read())  # m4a 파일 저장
-            temp_m4a_file.flush()
-            m4a_path = temp_m4a_file.name
 
-        # 변환된 wav 파일 경로
-        temp_wav_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-        wav_path = temp_wav_file.name
+# 파일 처리 함수
+def process_audio_file(file_content, selected_file):
+     # 파일 크기 제한 (25MB)
+    MAX_FILE_SIZE_MB = 25
+    MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+    # 파일 크기 확인 (BytesIO 객체의 크기 확인)
+    if isinstance(file_content, BytesIO):
+        file_size = file_content.getbuffer().nbytes
+    else:
+        file_size = len(file_content) 
         
-        # ffmpeg을 사용하여 m4a -> wav 변환
-        command = ['/mount/src/soryhon/hanachatbot/ffmpeg', '-i', m4a_path, wav_path]
-        subprocess.run(command, check=True)
-
-        # 변환된 wav 파일 열기
-        with open(wav_path, 'rb') as wav_file:
-            wav_content = wav_file.read()
-
-        # 임시 파일 삭제
-        os.remove(m4a_path)
-        os.remove(wav_path)
-
-        return wav_content
-
-    except Exception as e:
-        st.error(f"m4a 파일을 wav로 변환하는 중 오류가 발생했습니다: {str(e)}")
-        return None
-
-# m4a 파일을 wav로 변환하는 함수 (ffmpeg 사용)
-def convert_m4a_to_wav(file_content):
-    try:
-        # 임시 m4a 파일 생성
-        with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as temp_m4a_file:
-            temp_m4a_file.write(file_content.read())  # BytesIO 객체의 내용을 임시 파일로 저장
-            temp_m4a_file.flush()
-            m4a_path = temp_m4a_file.name
-
-        # 변환된 wav 파일 경로
-        temp_wav_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        wav_path = temp_wav_file.name
-        st.write(f"m4a_path : {m4a_path}")
-        st.write(f"wav_path : {wav_path}")
-        
-        # ffmpeg을 사용하여 m4a -> wav 변환
-        command = ['ffmpeg', '-i', m4a_path, wav_path]
-        subprocess.run(command, check=True)
-
-        # 변환된 wav 파일 열기
-        with open(wav_path, 'rb') as wav_file:
-            wav_content = wav_file.read()
-
-        # 임시 파일 삭제
-        os.remove(m4a_path)
-        os.remove(wav_path)
-
-        return BytesIO(wav_content)  # 변환된 wav 파일을 다시 BytesIO 객체로 반환
-
-    except Exception as e:
-        st.error(f"m4a 파일을 wav로 변환하는 중 오류가 발생했습니다: {str(e)}")
-        return None
-
-# m4a 파일을 wav로 변환하는 함수 (ffmpeg 사용)
-def convert_m4a_to_mp3(file_content):
-    try:
-        # 임시 m4a 파일 생성
-        with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as temp_m4a_file:
-            temp_m4a_file.write(file_content.read())  # BytesIO 객체의 내용을 임시 파일로 저장
-            temp_m4a_file.flush()
-            m4a_path = temp_m4a_file.name
-
-        # 변환된 wav 파일 경로
-        temp_wav_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-        mp3_path = temp_wav_file.name
-  
-        st.write(f"m4a_path : {m4a_path}")
-        st.write(f"wav_path : {mp3_path}")
-        
-        # ffmpeg을 사용하여 m4a -> wav 변환
-        command = ['ffmpeg', '-i', m4a_path, mp3_path]
-        subprocess.run(command, check=True)
-
-        # 변환된 wav 파일 열기
-        with open(mp3_path, 'rb') as wav_file:
-            mp3_content = wav_file.read()
-
-        # 임시 파일 삭제
-        os.remove(m4a_path)
-        os.remove(mp3_path)
-
-        return BytesIO(mp3_content)  # 변환된 wav 파일을 다시 BytesIO 객체로 반환
-
-    except Exception as e:
-        st.error(f"m4a 파일을 mp3로 변환하는 중 오류가 발생했습니다: {str(e)}")
-        return None
-        
-# Whisper API를 통해 음성 파일에서 텍스트를 추출하는 함수
-def extract_text_from_audio(file_content, file_type):
-    # Whisper API에서 지원하는 확장자
-    supported_audio_types = ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm']
-
-    # 25MB 파일 크기 제한
-    MAX_FILE_SIZE_BYTES = 26214400  # 25MB
-    file_content.seek(0, os.SEEK_END)  # 파일 크기 확인 전 파일 포인터를 끝으로 이동
-    file_size = file_content.tell()
-
+    # 파일 확장자 확인
+    file_extension = selected_file.split('.')[-1].lower()
+    
+    # 파일 크기 확인
     if file_size > MAX_FILE_SIZE_BYTES:
-        st.error(f"파일 크기가 너무 큽니다. Whisper API의 최대 파일 크기 제한은 25MB입니다. 현재 파일 크기: {file_size / (1024 * 1024):.2f}MB")
-        return None
-    file_content.seek(0)  # 다시 파일 포인터를 처음으로 이동
+        st.error(f"파일 크기가 {MAX_FILE_SIZE_MB}MB를 초과했습니다. 크기: {file_size / (1024 * 1024):.2f} MB")
+    else:
+        # .m4a 파일은 mp3로 변환 후 Whisper API로 전달
+        if file_extension == "m4a":
+            mp3_path = convert_m4a_to_mp3(file_content)
+            if mp3_path:
+                text = transcribe_audio(mp3_path)
+                #if text:
+                    #st.text_area("추출된 텍스트:", text, height=300)
+                os.remove(mp3_path)
+                return text
+        # 다른 형식의 파일은 바로 Whisper API로 전달
+        elif file_extension in ["mp3", "wav", "ogg", "flac","m4a"]:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as audio_temp_file:
+                audio_temp_file.write(file_content.read())
+                audio_path = audio_temp_file.name
 
-    # m4a 파일은 wav로 변환
-
-    if file_type == 'm4a':
-        st.write("m4a 파일을 변환 중입니다...")
-        #file_content = convert_m4a_to_wav(file_content)
-        #file_content = convert_m4a_to_mp3(file_content)
-        file_content = convert_m4a_to_wav_from_install(file_content)
-        if file_content is None:
-            st.write("m4a 파일을 None")
+            text = transcribe_audio(audio_path)
+            #if text:
+                #st.text_area("추출된 텍스트:", text, height=300)
+            return text
+            os.remove(audio_path)
+        else:
+            st.error(f"{file_extension} 형식은 지원되지 않습니다.")
             return None
-        file_type = 'wav'  # 변환 후 wav로 Whisper API에 전송
 
-    if file_type not in supported_audio_types:
-        st.error(f"Whisper API는 '{file_type}' 형식을 지원하지 않습니다. 지원되는 형식: {supported_audio_types}")
-        return None
-
-    # Whisper API 요청
+# m4a 파일을 mp3로 변환하는 함수
+def convert_m4a_to_mp3(file_content):
+    m4a_path = None
     try:
-        openai.api_key = st.session_state["openai_api_key"]
+        # 임시 파일에 m4a 파일 저장 (BytesIO 데이터를 파일로 저장)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".m4a") as m4a_temp_file:
+            m4a_temp_file.write(file_content.read())  # BytesIO의 데이터를 파일로 저장
+            m4a_path = m4a_temp_file.name
+        
+        # mp3 파일로 변환
+        mp3_path = m4a_path.replace(".m4a", ".mp3")
+        # ffmpeg와 ffprobe 경로 설정
+        AudioSegment.converter = which("ffmpeg")  # ffmpeg 경로 설정
+        AudioSegment.ffprobe = which("ffprobe")  # ffprobe 경로 설정
+        audio = AudioSegment.from_file(m4a_path, format="m4a")
+        audio.export(mp3_path, format="mp3")
 
-        # 파일을 Whisper API로 전송
-        with tempfile.NamedTemporaryFile(suffix=f".{file_type}", delete=False) as temp_file:
-            temp_file.write(file_content.read())
-            temp_file.flush()
-            temp_file_name = temp_file.name
+        return mp3_path
+    except Exception as e:
+        st.error(f"m4a 파일을 mp3로 변환하는 중 오류가 발생했습니다: {e}")
+        return None
+    finally:
+        # m4a 파일이 정상적으로 생성된 경우에만 삭제
+        if m4a_path and os.path.exists(m4a_path):
+            os.remove(m4a_path)
+            
 
-        with open(temp_file_name, 'rb') as audio_file:
+# 음성 파일을 Whisper API를 통해 텍스트로 변환하는 함수
+def transcribe_audio(audio_path):
+    try:
+        with open(audio_path, "rb") as audio_file:
             response = openai.Audio.transcribe("whisper-1", audio_file)
-
-        # 임시 파일 삭제
-        os.remove(temp_file_name)
-
-        # 추출된 텍스트 반환
-        return response['text']
-
-    except openai.error.InvalidRequestError as e:
-        st.error(f"Whisper API 요청이 유효하지 않습니다. 오류 메시지: {str(e)}")
+            return response['text']
+    except Exception as e:
+        st.error(f"Whisper API를 통해 음성 파일에서 텍스트를 추출하는 중 오류가 발생했습니다: {e}")
         return None
 
-    except Exception as e:
-        st.error(f"Whisper API를 통해 음성 파일에서 텍스트를 추출하는 중 오류가 발생했습니다: {str(e)}")
-        return None    
+# LLM을 통해 프롬프트와 파일을 전달하고 응답을 받는 함수
+def run_llm_with_audio_and_prompt(api_key, titles, requests, audio_data_str):
+    global global_generated_prompt
+    openai.api_key = api_key
 
+    responses = []
+    global_generated_prompt = []  # 프롬프트들을 담을 리스트 초기화
+
+    try:
+        # 요청사항 리스트 문자열 생성
+        request_list_str = "\n".join([
+            f"{i+1}.{title}의 항목 데이터에 대해 '{request}' 요청 사항을 만족하게 답변해야 한다.\n"
+            for i, (title, request) in enumerate(zip(titles, requests))
+        ])
+
+        # 프롬프트 텍스트 정의
+        generated_prompt = f"""
+        아애의 항목 데이터를 간결하고 깔끔한 보고서 작성을 위해 보고서 내용에 대해서 알기 쉽게 내용 요약하고 설명해야 한다.
+        항목 데이터는 음성파일을 텍스트로로 추출한 데이터이니 이를 토대로 다음과 같은 조건에 모두 만족해야 한다.
+        가. 아래의 항목 데이터를 분석하여 각 항목마다의 '요청사항' 리스트와 조건사항에 대해 모두 만족할 수 있도록 최적화된 보고서를 완성해.
+        나. 항목 데이터 내 가장 첫번째 행은 각 보고서 항목에 타이틀이므로 순번과 문구를 그대로 유지해야 한다. 이 항목의 타이틀을 기준으로 각 항목 데이터를 분류하고 그에 맞는 요청사항을 반영해야 한다.
+        다. 문단 끝날 때마다 줄바꿈을 해야 하고 줄바꿈은 <br/> 태그로 변환한다.
+        라. 표 형식의로 table태그로 답변 할 때는 th과 td 태그는 border는 사이즈 1이고 색상은 검정색으로 구성한다. table 태그 가로길이는 전체를 차지해야 한다.
+        마. 요약과 설명으로 답변 가시성 높게 특수기호를 활용하여 보고서 양식에 준하게 요약한 내용을 설명해줘야 하고, 보고서 양식에 맞춰 간결하고 깔끔하게 요약하고 html 형식으로 변환해야 한다.
+        바. 이외 table 태그가 포함 안된 데이터는 파일에서 텍스트를 추출한 데이터로 내용으로 
+        사. 답변할 때는 반드시 모든 항목 데이터의 수정한 데이터 내용과 HTML 형삭에 맞춰 답변한다. 문단마다 줄바꿈을 적용하여 br태그 활용하고 가시성 높게 특수기호를 활용하여 보고서 양식에 준하게 요약한 내용을 설명해줘야 한다.
+        아. '✨AI 요약과 설명' 타이틀 추가하고 가장 먼저 나와야하고 위에는 그 어떤한 설명 내용도 먼저 응답하면 안 된다. 
+        자. 이 타이틀 아래에 전달받은 보고서 전반적인 내용에 대해 너가 선정한 가장 좋은 방법으로 요약과 설명하고 그 내용을 HTML 형식으로 변환하여 답변해야 한다.
+        차. 하단에 <hr>태그와 <p>태그를 추가하고 그 아래에 '🗣️번역 내용'이 타이틀을 추가한다. 항목 데이터가 영어일 경우에는 요약과 설명을 한글로 번역하고 타이틀을 '🗣️번역 내용(한글)'로 출력하고
+            한글일 경우에는 요역과 설명을 영어로 변역하고 타이틀은 '🗣️번역 내용(Endglish)'로 출력해야 한다.
+        차. '````', '````HTML' 이 문구들이 답변에 포함되지 않아야 한다.
+        -요청사항
+        [
+            {request_list_str}
+        ]
+        -항목 데이터
+        [
+            {audio_data_str}
+        ]
+        """
+        
+        # 텍스트 길이 제한 확인 (예: 1000000자로 제한)
+        if len(generated_prompt) > 1000000:
+            st.error("프롬프트 글자 수 초과로 LLM 연동에 실패했습니다.")
+        else:
+            global_generated_prompt.append(generated_prompt)
+            prompt_template = PromptTemplate(
+                template=generated_prompt,
+                input_variables=[]
+            )
+
+            # LLM 모델 생성
+            llm = ChatOpenAI(model_name="gpt-4o")
+            chain = LLMChain(llm=llm, prompt=prompt_template)
+
+            success = False
+            retry_count = 0
+            max_retries = 5  # 최대 재시도 횟수
+
+            # 응답을 받을 때까지 재시도
+            while not success and retry_count < max_retries:
+                try:
+                    response = chain.run({})
+                    responses.append(response)
+                    success = True
+                except RateLimitError:
+                    retry_count += 1
+                    st.warning(f"API 요청 한도를 초과했습니다. 10초 후 다시 시도합니다. 재시도 횟수: {retry_count}/{max_retries}")
+                    time.sleep(10)
+
+                time.sleep(10)
+    except Exception as e:
+        st.error(f"LLM 실행 중 오류가 발생했습니다: {str(e)}")
+
+    return respons기
+    
+def get_audio_template_files_list(repo, branch, token):
+    template_folder = "audioTemplateFiles"
+    url = f"https://api.github.com/repos/{repo}/contents/{template_folder}?ref={branch}"
+    headers = {"Authorization": f"token {token}"}
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 200:
+        # JSON 파일만 필터링하여 리스트로 반환
+        return [item['name'] for item in response.json() if item['name'].endswith('.json')]
+    else:
+        st.error("templateFiles 폴더의 파일 목록을 가져오지 못했습니다.")
+        return []
+
+# JSON 파일의 내용을 불러오는 함수
+def load_audio_template_from_github(repo, branch, token, file_name):
+    template_folder = "audioTemplateFiles"
+    json_file_path = f"{template_folder}/{file_name}"
+    url = f"https://api.github.com/repos/{repo}/contents/{json_file_path}?ref={branch}"
+    headers = {"Authorization": f"token {token}"}
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 200:
+        file_content = base64.b64decode(response.json()['content'])
+        return json.loads(file_content)
+    else:
+        st.error(f"{file_name} 파일을 가져오지 못했습니다.")
+        return None
+
+def exec_page(file_name):
+    if file_name:
+        with open(file_name, 'r') as file:
+                file_content = file.read()
+            
+        # 파일 내용을 화면에 출력
+        #st.code(file_content, language='python')
+        try:
+            exec(file_content)  # exec()을 사용하여 추출된 Python 코드를 실행
+        except Exception as e:
+            st.error(f"코드를 실행하는 중 오류가 발생했습니다: {str(e)}")  
+
+# LLM을 통해 프롬프트와 파일을 전달하고 응답을 받는 함수
+def run_llm_with_keyword_and_prompt(api_key, title, request):
+    global global_generated_prompt
+    openai.api_key = api_key
+
+    responses = []
+    global_generated_prompt = []  # 프롬프트들을 담을 리스트 초기화
+
+    try:
+
+        # 프롬프트 텍스트 정의
+        generated_prompt = f"""
+        '{title}'에 대해 웹 검색 기반으로 검색 조회하고 분석하여 간결하고 깔끔한 보고서를 작성해야 한다..
+        다음과 같은 조건에 모두 만족해야 한다.
+        가. '{title}'에 대해 웹 검색 기반으로 검색 조회하여 데이터를 수집해야 한다.
+        나. 답변할 때 첫번째 행에는 h3 태그를 활용해서 '{title}' 문구가 반드시 시작되어야 한다.
+        다. 아래의 요청사항에 만족하게 최적화된 내용으로 답변해야 한다.
+        라. 검색한 내용을 먼저 요목조목하게 보여주고 그 다음에 요약  및 설명으로 답변해야 한다.
+        마. 표 형식의로 table태그로 답변 할 때는 th과 td 태그는 border는 사이즈 1이고 색상은 검정색으로 구성한다. table 태그 가로길이는 전체를 차지해야 한다.
+        바. 이외 table 태그가 포함 안된 설명은 너가 생각한 가장 좋은 보고서 양식에 맞춰 간결하고 깔끔하게 요약하고 html 형식으로 변환해야 한다.
+        사. 답변할 때는 반드시 모든 항목 데이터의 수정한 데이터 내용과 HTML 형삭에 맞춰 답변한다. 문단마다 줄바꿈을 적용하여 br태그 활용하고 가시성 높게 특수기호와 이모지를 활용하여 보고서 양식에 준하게 요약한 내용을 설명한다.
+        아. 답변할 때 두번째 행에는 h3 태그를 활용해서 '✨AI 설명 및 요약' 타이틀 추가하고 색상을 달리 구성한다. 너의 답변이라는 것을 표현하는 특수문자로 강조해.
+               전달받은 보고서 전반적인 내용에 대해 너가 선정한 가장 좋은 방법으로 요약과 설명하고 그 내용을 HTML 형식으로 변환하여 답변해야 한다.
+        자. '````', '````HTML' 이 문구들이 답변에 포함되지 않아야 한다.
+        -요청사항
+        [
+            {request}
+        ]
+        """
+        
+        # 텍스트 길이 제한 확인 (예: 1000000자로 제한)
+        if len(generated_prompt) > 1000000:
+            st.error("프롬프트 글자 수 초과로 LLM 연동에 실패했습니다.")
+        else:
+            global_generated_prompt.append(generated_prompt)
+            prompt_template = PromptTemplate(
+                template=generated_prompt,
+                input_variables=[]
+            )
+
+            # LLM 모델 생성
+            llm = ChatOpenAI(model_name="gpt-4o")
+            chain = LLMChain(llm=llm, prompt=prompt_template)
+
+            success = False
+            retry_count = 0
+            max_retries = 5  # 최대 재시도 횟수
+
+            # 응답을 받을 때까지 재시도
+            while not success and retry_count < max_retries:
+                try:
+                    response = chain.run({})
+                    response = response.replace('/n', '<br/>')
+                    response = response.replace('```html', '')
+                    response = response.replace('```', '')
+                    responses.append(response)
+                    success = True
+                except RateLimitError:
+                    retry_count += 1
+                    st.warning(f"API 요청 한도를 초과했습니다. 10초 후 다시 시도합니다. 재시도 횟수: {retry_count}/{max_retries}")
+                    time.sleep(10)
+
+                time.sleep(10)
+    except Exception as e:
+        st.error(f"LLM 실행 중 오류가 발생했습니다: {str(e)}")
+
+    return responses
+
+# 보고서명 리스트를 가져오고, reportFiles 폴더 존재 여부를 확인하고 없으면 생성하는 함수
+def get_reportType_file_list_from_github(repo, branch, token, folder_name):
+    
+    if folder_name:
+        folder_check = check_and_create_github_folder_if_not_exists(repo, folder_name, token, branch)
+    
+        if folder_check:
+            # 폴더 내의 파일을 가져옴
+            url = f"https://api.github.com/repos/{repo}/git/trees/{branch}?recursive=1"
+            headers = {"Authorization": f"token {token}"}
+            response = requests.get(url, headers=headers)
+            
+            if response.status_code == 200:
+                 # 폴더 내에 있는 .html 파일만 가져오고, 경로에서 folder_name 부분을 제거
+                files = [
+                    item['path'].replace(f"{folder_name}/", "") 
+                    for item in response.json().get('tree', []) 
+                    if item['type'] == 'blob' and item['path'].startswith(folder_name) and item['path'].endswith('.html')
+                ]
+                return files
+            else:
+                st.error("GitHub 파일 목록을 가져오지 못했습니다. 저장소 정보나 토큰을 확인하세요.")
+                return []
+        else:
+            st.error("reportFiles 폴더가 존재하지 않아 생성할 수 없습니다.")
+            return []
+    else:
+        return []
+
+# 사용자 IP 주소 및 컴퓨터명 가져오기
+def get_user_ip_and_hostname():
+    hostname = socket.gethostname()  # 컴퓨터명 추출
+    ip_address = socket.gethostbyname(hostname)  # IP 주소 추출
+    return ip_address, hostname
+    
+# 파일을 GitHub에서 가져오고, 없으면 생성하고 있으면 True 반환
+def check_csv_file_from_github(token, repo, branch, filepath):
+    encoded_filepath = urllib.parse.quote(filepath)
+    url = f"https://api.github.com/repos/{repo}/contents/{encoded_filepath}?ref={branch}"
+    headers = {"Authorization": f"token {token}"}
+    
+    # 파일 존재 여부 확인
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code == 200:
+        # 파일이 존재하면 True 반환
+        return True
+    elif response.status_code == 404:
+        # 파일이 없으면 파일을 생성
+        return create_file_in_github(token, repo, branch, filepath )
+    else:
+        st.error(f"{filepath} 파일을 가져오지 못했습니다. 상태 코드: {response.status_code}")
+        return None
+
+# 파일을 GitHub에 생성하는 함수
+def create_file_in_github(token, repo, branch, filepath):
+    url = f"https://api.github.com/repos/{repo}/contents/{filepath}"
+    headers = {"Authorization": f"token {token}"}
+    message = "Create new file"
+    
+    # CSV 파일의 기본 내용 (헤더)
+    content = base64.b64encode(b"ID,Score,IP,Hostname,DATE").decode('utf-8')
+    
+    data = {
+        "message": message,
+        "content": content,
+        "branch": branch
+    }
+    
+    # 파일 생성 요청
+    response = requests.put(url, headers=headers, data=json.dumps(data))
+    
+    if response.status_code == 201:
+        #st.success(f"{filepath} 파일을 성공적으로 생성했습니다.")
+        return True
+    else:
+        #st.error(f"파일 생성 중 오류가 발생했습니다. 상태 코드: {response.status_code}")
+        return False
+
+# CSV 파일에 데이터를 추가하는 함수
+def add_to_csv(nickname, score, token, repo, branch, file_path):
+    # 파일이 GitHub에 존재하는지 확인하고, 없으면 생성
+    file_exists = check_csv_file_from_github(token, repo, branch, file_path)
+    
+    # GitHub API로 파일 가져오기
+    encoded_filepath = urllib.parse.quote(file_path)
+    url = f"https://api.github.com/repos/{repo}/contents/{encoded_filepath}?ref={branch}"
+    headers = {"Authorization": f"token {token}"}
+    
+    if file_exists:  # 파일이 존재하면 데이터 추가
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            file_content = base64.b64decode(response.json()['content']).decode('utf-8')
+            df = pd.read_csv(StringIO(file_content))
+        else:
+            st.error(f"{file_path} 파일을 가져오지 못했습니다. 상태 코드: {response.status_code}")
+            return
+    else:  # 파일이 없으면 새로운 데이터프레임 생성
+        df = pd.DataFrame(columns=['ID', 'Score', 'IP', 'Hostname', 'DATE'])
+
+    ip, hostname = get_user_ip_and_hostname()
+
+    # 새 데이터 추가 (DataFrame으로 변환)
+    new_data = pd.DataFrame([{
+        'ID': nickname,
+        'Score': score,
+        'IP': ip,
+        'Hostname': hostname,
+        'DATE': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }])
+    
+    # pd.concat()을 사용하여 데이터 추가
+    df = pd.concat([df, new_data], ignore_index=True)
+
+    # CSV 데이터를 base64로 인코딩
+    csv_content = df.to_csv(index=False)
+    encoded_content = base64.b64encode(csv_content.encode('utf-8')).decode('utf-8')
+
+    # 파일 업데이트 (GitHub API 요청)
+    update_data = {
+        "message": "Update CSV with new data",
+        "content": encoded_content,
+        "branch": branch,
+        "sha": requests.get(url, headers=headers).json()['sha']  # 파일의 SHA 값 가져오기
+    }
+
+    response = requests.put(url, headers=headers, data=json.dumps(update_data))
+
+    if response.status_code == 200:
+        st.success(f"{nickname}님의 평가가 성공적으로 등록되었습니다.")
+    else:
+        st.error(f"파일 업데이트 중 오류가 발생했습니다. 상태 코드: {response.status_code}")
+
+# 별 이미지를 설정하는 함수
+def get_star_images(score):
+    star_images = ["image/star01.png"] * 5  # 기본적으로 모든 별을 흰색 별로 설정 (star01.png)
+
+    if score > 0 and score <= 0.50:
+        star_images[0] = "image/star03.png" 
+    if score > 0.50 and score <= 0.75:
+        star_images[0] = "image/star04.png"    
+    if score > 0.75 and score <= 1.00:
+        star_images[0] = "image/star05.png" 
+    if score > 1.00:
+        star_images[0] = "image/star05.png" 
+    if score > 1.00 and score <= 1.25:
+        star_images[1] = "image/star02.png"
+    if score > 1.25 and score <= 1.50:
+        star_images[1] = "image/star03.png" 
+    if score > 1.50 and score <= 1.75:
+        star_images[1] = "image/star04.png"    
+    if score > 1.75 and score <= 2.00:
+        star_images[1] = "image/star05.png" 
+    if score > 2.00:
+        star_images[1] = "image/star05.png" 
+    if score > 2.00 and score <= 2.25:
+        star_images[2] = "image/star02.png"
+    if score > 2.25 and score <= 2.50:
+        star_images[2] = "image/star03.png" 
+    if score > 2.50 and score <= 2.75:
+        star_images[2] = "image/star04.png"    
+    if score > 2.75 and score <= 3.00:
+        star_images[2] = "image/star05.png" 
+    if score > 3.00:
+        star_images[2] = "image/star05.png" 
+    if score > 3.00 and score <= 3.25:
+        star_images[3] = "image/star02.png"
+    if score > 3.25 and score <= 3.50:
+        star_images[3] = "image/star03.png" 
+    if score > 3.50 and score <= 3.75:
+        star_images[3] = "image/star04.png"    
+    if score > 3.75 and score <= 4.00:
+        star_images[3] = "image/star05.png" 
+    if score > 4.00:
+        star_images[3] = "image/star05.png" 
+    if score > 4.00 and score <= 4.25:
+        star_images[4] = "image/star02.png"
+    if score > 4.25 and score <= 4.50:
+        star_images[4] = "image/star03.png" 
+    if score > 4.50 and score <= 4.75:
+        star_images[4] = "image/star04.png"    
+    if score > 4.75 and score <= 5.00:
+        star_images[4] = "image/star05.png" 
+    
+
+    return star_images
+    
 # Backend 기능 구현 끝 ---
